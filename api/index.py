@@ -24,7 +24,11 @@ def firestore_get(collection, doc_id):
             if "stringValue" in value:
                 result[key] = value["stringValue"]
             elif "arrayValue" in value:
-                result[key] = [item.get("stringValue", "") for item in value.get("values", [])]
+                vals = value["arrayValue"].get("values", [])
+                if vals:
+                    result[key] = [v.get("stringValue", str(v.get("integerValue", ""))) for v in vals]
+                else:
+                    result[key] = []
             elif "integerValue" in value:
                 result[key] = int(value["integerValue"])
             elif "booleanValue" in value:
@@ -39,20 +43,20 @@ def firestore_set(collection, doc_id, data):
         if isinstance(val, str):
             fields[key] = {"stringValue": val}
         elif isinstance(val, list):
-            fields[key] = {"arrayValue": {"values": [{"stringValue": item} for item in val]}}
+            fields[key] = {"arrayValue": {"values": [{"stringValue": str(item)} for item in val]}}
         elif isinstance(val, bool):
             fields[key] = {"booleanValue": val}
         elif isinstance(val, int):
-            fields[key] = {"integerValue": val}
+            fields[key] = {"integerValue": str(val)}
     body = {"fields": fields}
     r = requests.patch(url, json=body)
-    return r.status_code == 200
+    return r.status_code in [200, 201]
 
 def firestore_update(collection, doc_id, data):
     return firestore_set(collection, doc_id, data)
 
 def firestore_query(collection, field, operator, value):
-    url = f"{FIRESTORE_URL}/{collection}?key={API_KEY}"
+    url = f"{FIRESTORE_URL}:runQuery?key={API_KEY}"
     body = {
         "structuredQuery": {
             "from": [{"collectionId": collection}],
@@ -60,7 +64,7 @@ def firestore_query(collection, field, operator, value):
                 "fieldFilter": {
                     "field": {"fieldPath": field},
                     "op": operator,
-                    "value": {"stringValue": value}
+                    "value": {"stringValue": str(value)}
                 }
             }
         }
@@ -68,19 +72,22 @@ def firestore_query(collection, field, operator, value):
     r = requests.post(url, json=body)
     results = []
     if r.status_code == 200:
-        for doc in r.json().get("documents", []):
-            doc_data = {}
-            fields = doc.get("fields", {})
-            for key, val in fields.items():
-                if "stringValue" in val:
-                    doc_data[key] = val["stringValue"]
-                elif "arrayValue" in val:
-                    doc_data[key] = [item.get("stringValue", "") for item in val.get("values", [])]
-            # Извлекаем ID документа из имени
-            doc_name = doc.get("name", "")
-            doc_id = doc_name.split("/")[-1] if doc_name else ""
-            doc_data["_id"] = doc_id
-            results.append(doc_data)
+        docs = r.json()
+        if isinstance(docs, list):
+            for doc in docs:
+                if "document" in doc:
+                    doc_data = {}
+                    fields = doc["document"].get("fields", {})
+                    for key, val in fields.items():
+                        if "stringValue" in val:
+                            doc_data[key] = val["stringValue"]
+                        elif "arrayValue" in val:
+                            vals = val["arrayValue"].get("values", [])
+                            doc_data[key] = [v.get("stringValue", "") for v in vals]
+                    doc_name = doc["document"].get("name", "")
+                    doc_id = doc_name.split("/")[-1] if doc_name else ""
+                    doc_data["_id"] = doc_id
+                    results.append(doc_data)
     return results
 
 def firestore_add(collection, data):
@@ -90,14 +97,14 @@ def firestore_add(collection, data):
         if isinstance(val, str):
             fields[key] = {"stringValue": val}
         elif isinstance(val, list):
-            fields[key] = {"arrayValue": {"values": [{"stringValue": item} for item in val]}}
+            fields[key] = {"arrayValue": {"values": [{"stringValue": str(item)} for item in val]}}
         elif isinstance(val, bool):
             fields[key] = {"booleanValue": val}
         elif isinstance(val, int):
-            fields[key] = {"integerValue": val}
+            fields[key] = {"integerValue": str(val)}
     body = {"fields": fields}
     r = requests.post(url, json=body)
-    return r.status_code == 200
+    return r.status_code in [200, 201]
 
 # === API Telegram ===
 def send_message(chat_id, text, reply_markup=None, parse_mode=None):
@@ -234,9 +241,13 @@ def handle_client_time_select(chat_id, link_id, service_name, date, time):
 def handle_settings_services(chat_id):
     master = firestore_get("masters", str(chat_id))
     if not master:
+        send_message(chat_id, "Сначала зарегистрируйтесь как мастер.")
         return
     services = master.get("services", [])
-    text = "💈 *Ваши услуги:*" if services else "💈 Услуг пока нет."
+    if services:
+        text = "💈 *Ваши услуги:*\nНажмите на услугу, чтобы удалить."
+    else:
+        text = "💈 *У вас пока нет услуг.*\nНажмите «Добавить услугу»."
     send_message(chat_id, text, reply_markup=services_inline(services))
 
 def handle_add_service_prompt(chat_id):
@@ -288,6 +299,12 @@ def handle_text(chat_id, user_name, username, text):
         handle_master_link(chat_id)
     elif text == "📅 Моё расписание":
         send_message(chat_id, "📭 Записей пока нет.")
+    elif text == "👥 Клиенты":
+        send_message(chat_id, "👥 Пока пусто.")
+    elif text == "📊 Статистика":
+        send_message(chat_id, "📊 Ждем первых записей.")
+    elif text == "⏰ Рабочие часы":
+        send_message(chat_id, "⏰ Настройка рабочего времени появится в следующем обновлении.")
     else:
         send_message(chat_id, "Используйте меню.", reply_markup=master_menu())
 
