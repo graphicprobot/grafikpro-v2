@@ -5,33 +5,18 @@ import requests
 import traceback
 from datetime import datetime, timedelta
 import uuid
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 TOKEN = "8269135710:AAE9mv55_QJOg3VN6U7JploC6KqigKBZf6Y"
 TELEGRAM_URL = f"https://api.telegram.org/bot{TOKEN}"
 
-DB_FILE = "/tmp/database.json"
-STATE_FILE = "/tmp/user_states.json"
+# === FIREBASE ===
+cred = credentials.Certificate("firebase_key.json")
+firebase_admin.initialize_app(cred)
+db = firestore.client()
 
-def load_db():
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"masters": {}, "appointments": [], "links": {}}
-
-def save_db(data):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def load_states():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-def save_states(data):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
+# === API Telegram ===
 def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
     payload = {"chat_id": chat_id, "text": text}
     if reply_markup:
@@ -68,10 +53,15 @@ def services_inline(services):
     buttons.append([{"text": "🔙 Назад", "callback_data": "back_to_settings"}])
     return {"inline_keyboard": buttons}
 
+# === ВРЕМЕННЫЕ СОСТОЯНИЯ ===
+STATES = {}
+
 # === ОСНОВНЫЕ ФУНКЦИИ ===
 def handle_start(chat_id, user_name):
-    db = load_db()
-    if str(chat_id) in db["masters"]:
+    master_ref = db.collection("masters").document(str(chat_id))
+    master = master_ref.get()
+    
+    if master.exists:
         send_message(chat_id, f"С возвращением, мастер {user_name}!", reply_markup=master_menu())
     else:
         keyboard = {
@@ -81,96 +71,78 @@ def handle_start(chat_id, user_name):
         send_message(chat_id, "👋 Добро пожаловать в *График.Про*!\n\nЯ помогу записывать клиентов и не терять деньги.\n\n*Кто вы?*", reply_markup=keyboard)
 
 def handle_master_registration(chat_id, user_name, username):
-    db = load_db()
-    db["masters"][str(chat_id)] = {
-        "name": user_name,
-        "username": username,
-        "services": [],
-        "registered_at": datetime.now().isoformat()
-    }
-    save_db(db)
-    send_message(chat_id, "✅ Вы зарегистрированы как мастер!\n🔗 Теперь вам доступна персональная ссылка для клиентов.\nНажмите *«Моя ссылка»* в меню.", reply_markup=master_menu())
+    master_ref = db.collection("masters").document(str(chat_id))
+    if not master_ref.get().exists:
+        master_ref.set({
+            "name": user_name,
+            "username": username,
+            "services": [],
+            "created_at": datetime.now().isoformat()
+        })
+    send_message(chat_id, "✅ Вы зарегистрированы как мастер!\n🔗 Нажмите *«Моя ссылка»* в меню.", reply_markup=master_menu())
 
 def handle_master_link(chat_id):
-    db = load_db()
-    master = db["masters"].get(str(chat_id))
-    if not master:
+    master_ref = db.collection("masters").document(str(chat_id))
+    master = master_ref.get()
+    if not master.exists:
         send_message(chat_id, "Сначала зарегистрируйтесь как мастер.")
         return
-
-    # Проверяем, есть ли уже ссылка
-    existing_link = None
-    for link_id, link_data in db.get("links", {}).items():
-        if link_data.get("master_id") == str(chat_id):
-            existing_link = link_id
-            break
-
-    if not existing_link:
-        existing_link = str(uuid.uuid4())[:8]
-        if "links" not in db:
-            db["links"] = {}
-        db["links"][existing_link] = {"master_id": str(chat_id), "created_at": datetime.now().isoformat()}
-        save_db(db)
-
-    bot_username = "grafikpro_bot"
-    deeplink = f"https://t.me/{bot_username}?start=master_{existing_link}"
     
-    send_message(chat_id, f"🔗 *Ваша ссылка для клиентов:*\n\n`{deeplink}`\n\n📨 Отправьте её клиенту. Он перейдет по ней и сможет записаться.", parse_mode="Markdown")
+    links_ref = db.collection("links").where("master_id", "==", str(chat_id)).limit(1)
+    links = links_ref.get()
+    
+    if len(links) > 0:
+        link_id = links[0].id
+    else:
+        link_id = str(uuid.uuid4())[:8]
+        db.collection("links").document(link_id).set({
+            "master_id": str(chat_id),
+            "created_at": datetime.now().isoformat()
+        })
+    
+    bot_username = "grafikpro_bot"
+    deeplink = f"https://t.me/{bot_username}?start=master_{link_id}"
+    send_message(chat_id, f"🔗 *Ваша ссылка для клиентов:*\n\n`{deeplink}`\n\n📨 Отправьте её клиенту.", parse_mode="Markdown")
 
 def handle_client_start_from_link(chat_id, link_id):
-    db = load_db()
-    link_data = db.get("links", {}).get(link_id)
-    if not link_data:
+    link_ref = db.collection("links").document(link_id)
+    link = link_ref.get()
+    if not link.exists:
         send_message(chat_id, "❌ Ссылка недействительна.")
         return
-
-    master_id = link_data["master_id"]
-    master = db["masters"].get(master_id)
-    if not master:
-        send_message(chat_id, "❌ Мастер больше не принимает записи.")
+    
+    master_id = link.get("master_id")
+    master_ref = db.collection("masters").document(master_id)
+    master = master_ref.get()
+    if not master.exists:
+        send_message(chat_id, "❌ Мастер не найден.")
         return
-
+    
     services = master.get("services", [])
     if not services:
-        send_message(chat_id, "❌ У мастера пока нет услуг. Попробуйте позже.")
+        send_message(chat_id, "❌ У мастера пока нет услуг.")
         return
-
-    text = f"📝 *Запись к мастеру {master['name']}*\n\nВыберите услугу:"
-    buttons = []
-    for s in services:
-        buttons.append([{"text": s, "callback_data": f"client_service_{link_id}_{s}"}])
     
+    text = f"📝 *Запись к {master.get('name')}*\n\nВыберите услугу:"
+    buttons = [[{"text": s, "callback_data": f"client_service_{link_id}_{s}"}] for s in services]
     send_message(chat_id, text, reply_markup={"inline_keyboard": buttons})
 
-def handle_client_service_select(chat_id, link_id, service_name, message_id):
-    db = load_db()
-    link_data = db.get("links", {}).get(link_id)
-    if not link_data:
-        return
-    
-    # Предлагаем время (упрощенно, на завтра)
-    tomorrow = datetime.now() + timedelta(days=1)
+def handle_client_service_select(chat_id, link_id, service_name):
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     time_slots = ["09:00", "11:00", "13:00", "15:00", "17:00"]
     
-    text = f"📅 *Выберите время:*\nУслуга: *{service_name}*\nДата: *{tomorrow.strftime('%d.%m.%Y')}*"
-    buttons = []
-    for t in time_slots:
-        buttons.append([{"text": t, "callback_data": f"client_time_{link_id}_{service_name}_{tomorrow.strftime('%Y-%m-%d')}_{t}"}])
-    
+    text = f"📅 *Выберите время:*\nУслуга: *{service_name}*\nДата: *{tomorrow}*"
+    buttons = [[{"text": t, "callback_data": f"client_time_{link_id}_{service_name}_{tomorrow}_{t}"}] for t in time_slots]
     send_message(chat_id, text, reply_markup={"inline_keyboard": buttons})
 
 def handle_client_time_select(chat_id, link_id, service_name, date, time):
-    db = load_db()
-    link_data = db.get("links", {}).get(link_id)
-    if not link_data:
-        return
+    link_ref = db.collection("links").document(link_id)
+    link = link_ref.get()
+    master_id = link.get("master_id")
+    master = db.collection("masters").document(master_id).get()
+    master_name = master.get("name", "Мастер")
     
-    master_id = link_data["master_id"]
-    master = db["masters"].get(master_id)
-    
-    # Создаем запись
-    appointment = {
-        "id": str(uuid.uuid4())[:8],
+    db.collection("appointments").add({
         "master_id": master_id,
         "client_id": str(chat_id),
         "service": service_name,
@@ -178,77 +150,58 @@ def handle_client_time_select(chat_id, link_id, service_name, date, time):
         "time": time,
         "status": "confirmed",
         "created_at": datetime.now().isoformat()
-    }
+    })
     
-    if "appointments" not in db:
-        db["appointments"] = []
-    db["appointments"].append(appointment)
-    save_db(db)
-    
-    # Уведомляем клиента
-    send_message(chat_id, f"✅ *Запись подтверждена!*\n\nМастер: *{master['name']}*\nУслуга: *{service_name}*\nДата: *{date}*\nВремя: *{time}*\n\n📌 Мы напомним вам за час до записи.")
-    
-    # Уведомляем мастера
-    send_message(int(master_id), f"🔔 *Новая запись!*\n\nКлиент записался на услугу *{service_name}*\nДата: *{date}* в *{time}*")
+    send_message(chat_id, f"✅ *Запись подтверждена!*\n\nМастер: *{master_name}*\nУслуга: *{service_name}*\nДата: *{date}*\nВремя: *{time}*\n\n📌 Мы напомним вам за час до записи.")
+    send_message(int(master_id), f"🔔 *Новая запись!*\n\nКлиент записался на *{service_name}*\nДата: *{date}* в *{time}*")
 
 def handle_settings_services(chat_id):
-    db = load_db()
-    master = db["masters"].get(str(chat_id))
-    if not master:
+    master = db.collection("masters").document(str(chat_id)).get()
+    if not master.exists:
         return
-    
     services = master.get("services", [])
-    if services:
-        text = "💈 *Ваши услуги:*\nНажмите на услугу, чтобы удалить."
-    else:
-        text = "💈 У вас пока нет услуг."
+    text = "💈 *Ваши услуги:*\nНажмите на услугу, чтобы удалить." if services else "💈 У вас пока нет услуг."
     send_message(chat_id, text, reply_markup=services_inline(services))
 
 def handle_add_service_prompt(chat_id):
-    states = load_states()
-    states[str(chat_id)] = {"state": "adding_service"}
-    save_states(states)
+    STATES[str(chat_id)] = {"state": "adding_service"}
     keyboard = {"keyboard": [["🔙 Отмена"]], "resize_keyboard": True}
     send_message(chat_id, "✏️ Введите название услуги:", reply_markup=keyboard)
 
 def handle_add_service_name(chat_id, service_name):
-    db = load_db()
-    master = db["masters"].get(str(chat_id))
-    if master:
-        master.setdefault("services", []).append(service_name)
-        save_db(db)
+    master_ref = db.collection("masters").document(str(chat_id))
+    master = master_ref.get()
+    if master.exists:
+        services = master.get("services", [])
+        services.append(service_name)
+        master_ref.update({"services": services})
     
-    states = load_states()
-    states.pop(str(chat_id), None)
-    save_states(states)
-    
+    STATES.pop(str(chat_id), None)
     send_message(chat_id, f"✅ Услуга *«{service_name}»* добавлена!", reply_markup=settings_menu())
     handle_settings_services(chat_id)
 
 def handle_delete_service(chat_id, service_name):
-    db = load_db()
-    master = db["masters"].get(str(chat_id))
-    if master:
-        master["services"] = [s for s in master.get("services", []) if s != service_name]
-        save_db(db)
+    master_ref = db.collection("masters").document(str(chat_id))
+    master = master_ref.get()
+    if master.exists:
+        services = master.get("services", [])
+        services = [s for s in services if s != service_name]
+        master_ref.update({"services": services})
     handle_settings_services(chat_id)
 
 def handle_text(chat_id, user_name, username, text):
-    db = load_db()
-    states = load_states()
+    state = STATES.get(str(chat_id), {}).get("state")
     
-    user_state = states.get(str(chat_id), {}).get("state")
-    if user_state == "adding_service":
+    if state == "adding_service":
         if text == "🔙 Отмена":
-            states.pop(str(chat_id), None)
-            save_states(states)
+            STATES.pop(str(chat_id), None)
             send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
         else:
             handle_add_service_name(chat_id, text)
         return
     
     if text == "👤 Я мастер":
-        handle_master_registration(chat_id, user_name, username) if str(chat_id) not in db.get("masters",{}) else send_message(chat_id, "Уже зарегистрированы!", reply_markup=master_menu())
+        handle_master_registration(chat_id, user_name, username)
     elif text == "👥 Я клиент":
         send_message(chat_id, "Используйте ссылку от мастера для записи.")
     elif text == "⚙️ Настройки":
@@ -268,7 +221,7 @@ def handle_text(chat_id, user_name, username, text):
     else:
         send_message(chat_id, "Используйте меню.", reply_markup=master_menu())
 
-def handle_callback(chat_id, data, message_id=None):
+def handle_callback(chat_id, data):
     if data == "add_service":
         handle_add_service_prompt(chat_id)
     elif data.startswith("del_service_"):
@@ -278,7 +231,7 @@ def handle_callback(chat_id, data, message_id=None):
     elif data.startswith("client_service_"):
         parts = data.replace("client_service_", "").split("_", 1)
         link_id, service_name = parts[0], parts[1]
-        handle_client_service_select(chat_id, link_id, service_name, message_id)
+        handle_client_service_select(chat_id, link_id, service_name)
     elif data.startswith("client_time_"):
         parts = data.replace("client_time_", "").split("_", 3)
         link_id, service_name, date, time = parts
@@ -306,8 +259,7 @@ def process_update(update):
         cb = update["callback_query"]
         chat_id = cb["message"]["chat"]["id"]
         data = cb["data"]
-        message_id = cb["message"]["message_id"]
-        handle_callback(chat_id, data, message_id)
+        handle_callback(chat_id, data)
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
