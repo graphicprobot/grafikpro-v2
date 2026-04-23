@@ -107,8 +107,14 @@ def settings_menu():
 def services_list_keyboard(services):
     buttons = []
     for s in services:
-        name = s if isinstance(s, str) else s.get("name", "?")
-        buttons.append([{"text": f"❌ {name}", "callback_data": f"delservice_{name}"}])
+        if isinstance(s, dict):
+            name = s.get("name", "?")
+            price = s.get("price", 0)
+            label = f"❌ {name} ({price}₽)"
+        else:
+            name = str(s)
+            label = f"❌ {name}"
+        buttons.append([{"text": label, "callback_data": f"delservice_{name}"}])
     buttons.append([{"text": "➕ Добавить", "callback_data": "addservice"}])
     buttons.append([{"text": "🔙 Назад", "callback_data": "settings_back"}])
     return {"inline_keyboard": buttons}
