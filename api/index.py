@@ -141,13 +141,12 @@ def handle_start(chat_id, user_name):
         send_message(chat_id, "👋 Добро пожаловать в *График.Про*!\n\nКто вы?", reply_markup={"keyboard": [["👤 Я мастер"], ["👥 Я клиент"]], "resize_keyboard": True})
 
 def handle_master_registration(chat_id, user_name, username):
-    if not firestore_get("masters", str(chat_id)):
-        firestore_set("masters", str(chat_id), {
-            "name": user_name, "username": username, "services": [],
-            "schedule": {"start": "09:00", "end": "18:00"},
-            "created_at": datetime.now().isoformat()
-        })
-    send_message(chat_id, "✅ Вы зарегистрированы!", reply_markup=master_menu())
+    firestore_set("masters", str(chat_id), {
+        "name": user_name, "username": username, "services": [],
+        "schedule": {"start": "09:00", "end": "18:00"},
+        "created_at": datetime.now().isoformat()
+    })
+    send_message(chat_id, f"✅ Вы зарегистрированы как мастер, {user_name}!", reply_markup=master_menu())
 
 def handle_master_link(chat_id):
     if not firestore_get("masters", str(chat_id)):
