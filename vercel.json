@@ -1,0 +1,10 @@
+{
+  "buildCommand": "",
+  "outputDirectory": "",
+  "functions": {
+    "api/webhook.py": {
+      "memory": 128,
+      "maxDuration": 10
+    }
+  }
+}
