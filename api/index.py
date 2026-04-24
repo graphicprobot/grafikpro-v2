@@ -774,4 +774,4 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"status":"ok"}).encode())
     def do_GET(self):
         self.send_response(200); self.send_header('Content-type','application/json'); self.end_headers()
-        self.wfile.write(json.dumps({"status":"bot online"}).encode())
+        self.wfile.write(json.dumps({"status":"bot online"}).encode()) 
