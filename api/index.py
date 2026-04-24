@@ -146,7 +146,7 @@ def handle_start(chat_id, user_name):
         else:
             send_message(chat_id, "👋 *График.Про*\n\nКто вы?", reply_markup={"keyboard": [["👤 Я мастер"], ["👥 Я клиент"]], "resize_keyboard": True})
 
-# === МАСТЕР: ДАШБОРД ===
+# === МАСТЕР ===
 def handle_dashboard(chat_id):
     today = datetime.now().strftime('%Y-%m-%d')
     appointments = firestore_query("appointments", "master_id", "EQUAL", str(chat_id))
@@ -162,64 +162,25 @@ def handle_dashboard(chat_id):
             if isinstance(s, dict) and s.get("name") == svc:
                 total += s.get("price", 0)
     
-    text = f"📊 *Дашборд на сегодня ({today})*\n\n"
-    text += f"📅 Записей: *{len(today_appts)}*\n"
-    text += f"💰 Сумма: *{total}₽*\n"
-    
+    text = f"📊 *Дашборд на сегодня*\n\n📅 Записей: *{len(today_appts)}*\n💰 Сумма: *{total}₽*"
     if today_appts:
-        text += "\n*Ближайшие:*\n"
+        text += "\n\n*Ближайшие:*"
         today_appts.sort(key=lambda a: a.get("time", ""))
         for a in today_appts[:5]:
-            text += f"• {a.get('time')} — {a.get('client_name','?')} ({a.get('service')})\n"
-    
+            text += f"\n• {a.get('time')} — {a.get('client_name','?')} ({a.get('service')})"
     send_message(chat_id, text, reply_markup=master_menu())
 
-# === КЛИЕНТ: МОИ ЗАПИСИ ===
-def handle_client_appointments(chat_id):
-    all_appts = firestore_query("appointments", "client_id", "EQUAL", str(chat_id))
-    if not all_appts:
-        return send_message(chat_id, "📋 У вас пока нет записей.\n\nПолучите ссылку от мастера и запишитесь!")
-    
-    all_appts.sort(key=lambda a: (a.get("date", ""), a.get("time", "")))
-    text = "📋 *Мои записи:*\n"
-    buttons = []
-    
-    for a in all_appts:
-        master = firestore_get("masters", a.get("master_id", ""))
-        master_name = master.get("name", "Мастер") if master else "Мастер"
-        text += f"\n• {a.get('date')} в {a.get('time')}\n  {a.get('service')} у {master_name}"
-        buttons.append([{"text": f"❌ Отменить: {a.get('date')} {a.get('time')}", "callback_data": f"cancel_{a['_id']}"}])
-    
-    send_message(chat_id, text, reply_markup={"inline_keyboard": buttons} if buttons else None)
-
-def handle_cancel_appointment(chat_id, appt_id):
-    # Находим запись
-    appt = firestore_get("appointments", appt_id)
-    if not appt:
-        return send_message(chat_id, "❌ Запись не найдена.")
-    
-    if appt.get("client_id") != str(chat_id):
-        return send_message(chat_id, "❌ Это не ваша запись.")
-    
-    # Уведомляем мастера
-    master_id = appt.get("master_id")
-    if master_id:
-        send_message(int(master_id), f"❌ *Отмена записи!*\n\n{appt.get('client_name')} отменил запись\n{appt.get('service')}\n{appt.get('date')} в {appt.get('time')}")
-    
-    # Удаляем запись
-    firestore_delete("appointments", appt_id)
-    
-    send_message(chat_id, "✅ Запись отменена.", reply_markup=client_menu())
-    handle_client_appointments(chat_id)
-
-# === МАСТЕР: ССЫЛКА, РАСПИСАНИЕ, КЛИЕНТЫ ===
 def handle_master_link(chat_id):
     if not firestore_get("masters", str(chat_id)):
         return send_message(chat_id, "Сначала зарегистрируйтесь.")
     links = firestore_query("links", "master_id", "EQUAL", str(chat_id))
     link_id = links[0]["_id"] if links else str(uuid.uuid4())[:8]
     if not links: firestore_set("links", link_id, {"master_id": str(chat_id)})
-    send_message(chat_id, f"🔗 *Ваша ссылка:*\n\n`https://t.me/grafikpro_bot?start=master_{link_id}`\n\n📨 Отправьте клиенту.", parse_mode="Markdown")
+    # Две ссылки: прямая и деeplink для приложения
+    bot_user = "grafikpro_bot"
+    deeplink = f"https://t.me/{bot_user}?start=master_{link_id}"
+    app_link = f"tg://resolve?domain={bot_user}&start=master_{link_id}"
+    send_message(chat_id, f"🔗 *Ссылка для клиентов:*\n\n📨 [Открыть в Telegram]({app_link})\n\nИли скопируйте:\n`{deeplink}`", parse_mode="Markdown")
 
 def handle_schedule_view(chat_id):
     appointments = firestore_query("appointments", "master_id", "EQUAL", str(chat_id))
@@ -235,22 +196,18 @@ def handle_schedule_view(chat_id):
 def handle_clients_list(chat_id):
     appointments = firestore_query("appointments", "master_id", "EQUAL", str(chat_id))
     if not appointments: return send_message(chat_id, "👥 Пока нет клиентов.")
-    
-    # Собираем уникальных клиентов
     clients = {}
     for a in appointments:
         cid = a.get("client_phone", a.get("client_id"))
         if cid not in clients:
             clients[cid] = {"name": a.get("client_name", "?"), "phone": a.get("client_phone", ""), "history": []}
         clients[cid]["history"].append(f"{a.get('service')} ({a.get('date')})")
-    
     text = "👥 *Клиенты:*\n"
     for cid, data in list(clients.items())[:10]:
         text += f"\n• *{data['name']}* | {data['phone']}\n  {', '.join(data['history'][-3:])}"
-    
     send_message(chat_id, text, reply_markup=master_menu())
 
-# === УСЛУГИ (с длительностью) ===
+# === УСЛУГИ ===
 def handle_services_settings(chat_id):
     master = firestore_get("masters", str(chat_id))
     if not master: return send_message(chat_id, "Сначала зарегистрируйтесь.")
@@ -264,32 +221,25 @@ def handle_add_service_start(chat_id):
 
 def handle_add_service_name(chat_id, name):
     STATES[str(chat_id)] = {"state": "adding_service_price", "name": name}
-    send_message(chat_id, f"💰 Цена для «{name}» (только число):")
+    send_message(chat_id, f"💰 Цена для «{name}»:")
 
 def handle_add_service_price(chat_id, price_text):
     state = STATES.get(str(chat_id), {})
     name = state.get("name", "")
-    try:
-        price = int(price_text.strip())
-    except:
-        return send_message(chat_id, "❌ Введите число.")
+    try: price = int(price_text.strip())
+    except: return send_message(chat_id, "❌ Введите число.")
     STATES[str(chat_id)] = {"state": "adding_service_duration", "name": name, "price": price}
-    send_message(chat_id, f"⏱ Длительность «{name}» в минутах (например: 60):")
+    send_message(chat_id, f"⏱ Длительность «{name}» в минутах:")
 
 def handle_add_service_duration(chat_id, dur_text):
     state = STATES.get(str(chat_id), {})
-    name = state.get("name", "")
-    price = state.get("price", 0)
-    try:
-        duration = int(dur_text.strip())
-    except:
-        return send_message(chat_id, "❌ Введите число минут.")
-    
+    name, price = state.get("name", ""), state.get("price", 0)
+    try: duration = int(dur_text.strip())
+    except: return send_message(chat_id, "❌ Введите число минут.")
     master = firestore_get("masters", str(chat_id))
     services = [s for s in master.get("services", []) if isinstance(s, dict) and s.get("name")]
     services.append({"name": name, "price": price, "duration": duration})
     firestore_set("masters", str(chat_id), {"services": services})
-    
     STATES.pop(str(chat_id), None)
     send_message(chat_id, f"✅ *{name}* — {price}₽, {duration}мин", reply_markup=settings_menu())
 
@@ -319,7 +269,6 @@ def handle_schedule_set(chat_id, text):
 
 # === КЛИЕНТ: ЗАПИСЬ ===
 def handle_client_start(chat_id, link_id):
-    # Сохраняем клиента
     if not firestore_get("clients", str(chat_id)):
         firestore_set("clients", str(chat_id), {"created_at": datetime.now().isoformat()})
     
@@ -330,7 +279,7 @@ def handle_client_start(chat_id, link_id):
     services = [s for s in master.get("services", []) if isinstance(s, dict) and s.get("name")]
     if not services: return send_message(chat_id, "❌ Нет услуг.")
     
-    buttons = [[{"text": f"{s['name']} — {s['price']}₽ ({s.get('duration',60)}мин)", "callback_data": f"cl_srv_{link_id}_{s['name']}"}] for s in services]
+    buttons = [[{"text": f"{s['name']} — {s['price']}₽ ({s.get('duration',60)}мин)", "callback_data": f"clsrv_{link_id}_{s['name']}"}] for s in services]
     STATES[str(chat_id)] = {"link_id": link_id, "master_name": master.get("name")}
     send_message(chat_id, f"📝 *Запись к {master.get('name')}*\nВыберите услугу:", reply_markup={"inline_keyboard": buttons})
 
@@ -343,17 +292,31 @@ def handle_client_service_select(chat_id, link_id, service_name):
     for i in range(7):
         date = (datetime.now() + timedelta(days=i+1)).strftime('%Y-%m-%d')
         label = (datetime.now() + timedelta(days=i+1)).strftime('%d.%m (%a)')
-        buttons.append([{"text": label, "callback_data": f"cl_date_{link_id}_{date}"}])
+        # Используем cldate_ вместо cl_date_ чтобы избежать разбора по _
+        buttons.append([{"text": label, "callback_data": f"cldate_{link_id}_{date}"}])
     
     send_message(chat_id, f"📅 *{service_name}*\nВыберите дату:", reply_markup={"inline_keyboard": buttons})
 
 def handle_client_date_select(chat_id, link_id, date):
-    master = firestore_get(firestore_get("links", link_id)["master_id"])
-    sched = master.get("schedule", {"start": "09:00", "end": "18:00"})
-    start_h = int(sched["start"].split(":")[0])
-    end_h = int(sched["end"].split(":")[0])
+    link = firestore_get("links", link_id)
+    if not link:
+        send_message(chat_id, "❌ Ошибка: ссылка не найдена. Попробуйте ещё раз.")
+        return
     
-    all_appts = firestore_query("appointments", "master_id", "EQUAL", firestore_get("links", link_id)["master_id"])
+    master_id = link.get("master_id")
+    master = firestore_get("masters", master_id)
+    if not master:
+        send_message(chat_id, "❌ Мастер не найден.")
+        return
+    
+    sched = master.get("schedule", {"start": "09:00", "end": "18:00"})
+    try:
+        start_h = int(sched["start"].split(":")[0])
+        end_h = int(sched["end"].split(":")[0])
+    except:
+        start_h, end_h = 9, 18
+    
+    all_appts = firestore_query("appointments", "master_id", "EQUAL", master_id)
     busy = {a.get("time") for a in all_appts if a.get("date") == date}
     
     buttons = []
@@ -362,7 +325,7 @@ def handle_client_date_select(chat_id, link_id, date):
         if slot in busy:
             buttons.append([{"text": f"❌ {slot} (занято)", "callback_data": "ignore"}])
         else:
-            buttons.append([{"text": f"🟢 {slot}", "callback_data": f"cl_time_{link_id}_{date}_{slot}"}])
+            buttons.append([{"text": f"🟢 {slot}", "callback_data": f"cltime_{link_id}_{date}_{slot}"}])
     
     STATES[str(chat_id)]["date"] = date
     send_message(chat_id, f"⏰ *Выберите время:*\n{date}", reply_markup={"inline_keyboard": buttons})
@@ -385,6 +348,10 @@ def handle_client_phone(chat_id, phone):
         return send_message(chat_id, "❌ Неверный формат.")
     
     link = firestore_get("links", state.get("link_id", ""))
+    if not link:
+        STATES.pop(str(chat_id), None)
+        return send_message(chat_id, "❌ Сессия истекла. Начните заново.")
+    
     master_id = link["master_id"]
     master = firestore_get(master_id)
     
@@ -403,11 +370,41 @@ def handle_client_phone(chat_id, phone):
     send_message(chat_id, f"✅ *Запись подтверждена!*\n\n{master.get('name')}\n{state.get('service')}\n{state.get('date')} в {state.get('time')}\n{state.get('client_name')} | {phone_clean}\n\n📋 Ваши записи: /start → «Мои записи»", reply_markup=client_menu())
     send_message(int(master_id), f"🔔 *Новая запись!*\n\n{state.get('client_name')}\n{phone_clean}\n{state.get('service')}\n{state.get('date')} в {state.get('time')}")
 
-# === ОБРАБОТКА ===
+# === КЛИЕНТ: МОИ ЗАПИСИ ===
+def handle_client_appointments(chat_id):
+    all_appts = firestore_query("appointments", "client_id", "EQUAL", str(chat_id))
+    if not all_appts:
+        return send_message(chat_id, "📋 У вас пока нет записей.\n\nПолучите ссылку от мастера и запишитесь!")
+    
+    all_appts.sort(key=lambda a: (a.get("date", ""), a.get("time", "")))
+    text = "📋 *Мои записи:*\n"
+    buttons = []
+    
+    for a in all_appts:
+        master = firestore_get("masters", a.get("master_id", ""))
+        master_name = master.get("name", "Мастер") if master else "Мастер"
+        text += f"\n• {a.get('date')} в {a.get('time')}\n  {a.get('service')} у {master_name}"
+        buttons.append([{"text": f"❌ Отменить: {a.get('date')} {a.get('time')}", "callback_data": f"cancel_{a['_id']}"}])
+    
+    send_message(chat_id, text, reply_markup={"inline_keyboard": buttons} if buttons else None)
+
+def handle_cancel_appointment(chat_id, appt_id):
+    appt = firestore_get("appointments", appt_id)
+    if not appt: return send_message(chat_id, "❌ Запись не найдена.")
+    if appt.get("client_id") != str(chat_id): return send_message(chat_id, "❌ Это не ваша запись.")
+    
+    master_id = appt.get("master_id")
+    if master_id:
+        send_message(int(master_id), f"❌ *Отмена записи!*\n\n{appt.get('client_name')} отменил запись\n{appt.get('service')}\n{appt.get('date')} в {appt.get('time')}")
+    
+    firestore_delete("appointments", appt_id)
+    send_message(chat_id, "✅ Запись отменена.", reply_markup=client_menu())
+    handle_client_appointments(chat_id)
+
+# === ОБРАБОТКА ТЕКСТА ===
 def handle_text(chat_id, user_name, username, text):
     state = STATES.get(str(chat_id), {}).get("state")
     
-    # Цепочки состояний
     if state == "adding_service_name":
         if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
         return handle_add_service_name(chat_id, text)
@@ -427,14 +424,13 @@ def handle_text(chat_id, user_name, username, text):
         if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
         return handle_schedule_set(chat_id, text)
     
-    # Кнопки
     is_master = firestore_get("masters", str(chat_id))
     is_client = firestore_get("clients", str(chat_id))
     
     if text == "👤 Я мастер": handle_master_registration(chat_id, user_name, username)
     elif text == "👥 Я клиент":
         if not is_client: firestore_set("clients", str(chat_id), {"created_at": datetime.now().isoformat()})
-        send_message(chat_id, "👥 *Клиентский кабинет*\n\nПолучите ссылку от мастера и запишитесь!", reply_markup=client_menu())
+        send_message(chat_id, "👥 *Клиентский кабинет*\n\nПолучите ссылку от мастера!", reply_markup=client_menu())
     elif text == "📊 Дашборд": handle_dashboard(chat_id) if is_master else send_message(chat_id, "Только для мастера.")
     elif text == "📋 Мои записи": handle_client_appointments(chat_id)
     elif text == "🔍 Найти мастера": send_message(chat_id, "Попросите мастера отправить вам ссылку.")
@@ -445,27 +441,34 @@ def handle_text(chat_id, user_name, username, text):
     elif text == "🔗 Моя ссылка": handle_master_link(chat_id)
     elif text == "📅 Расписание": handle_schedule_view(chat_id)
     elif text == "👥 Клиенты": handle_clients_list(chat_id)
-    elif text == "📊 Статистика": handle_dashboard(chat_id)
     else: send_message(chat_id, "Используйте меню.", reply_markup=master_menu() if is_master else client_menu())
 
 def handle_master_registration(chat_id, user_name, username):
     firestore_set("masters", str(chat_id), {"name": user_name, "username": username, "services": [], "schedule": {"start": "09:00", "end": "18:00"}, "created_at": datetime.now().isoformat()})
     send_message(chat_id, f"✅ {user_name}, вы зарегистрированы!", reply_markup=master_menu())
 
+# === CALLBACK ===
 def handle_callback(chat_id, data):
     if data == "addservice": handle_add_service_start(chat_id)
     elif data.startswith("delservice_"): handle_delete_service(chat_id, data.replace("delservice_", "", 1))
     elif data == "settings_back": send_message(chat_id, "⚙️ Настройки", reply_markup=settings_menu())
     elif data.startswith("cancel_"): handle_cancel_appointment(chat_id, data.replace("cancel_", "", 1))
-    elif data.startswith("cl_srv_"):
-        _, link_id, service = data.split("_", 2)
-        handle_client_service_select(chat_id, link_id, service)
-    elif data.startswith("cl_date_"):
-        _, link_id, date = data.split("_", 2)
-        handle_client_date_select(chat_id, link_id, date)
-    elif data.startswith("cl_time_"):
-        _, link_id, date, time = data.split("_", 3)
-        handle_client_time_select(chat_id, link_id, date, time)
+    elif data.startswith("clsrv_"):
+        # clsrv_{link_id}_{service_name}
+        parts = data.split("_", 2)
+        if len(parts) >= 3:
+            link_id, service = parts[1], parts[2]
+            handle_client_service_select(chat_id, link_id, service)
+    elif data.startswith("cldate_"):
+        parts = data.split("_", 2)
+        if len(parts) >= 3:
+            link_id, date = parts[1], parts[2]
+            handle_client_date_select(chat_id, link_id, date)
+    elif data.startswith("cltime_"):
+        parts = data.split("_", 3)
+        if len(parts) >= 4:
+            link_id, date, time = parts[1], parts[2], parts[3]
+            handle_client_time_select(chat_id, link_id, date, time)
     elif data == "ignore": pass
 
 def process_update(update):
