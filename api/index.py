@@ -1083,10 +1083,29 @@ def handle_manual_date(chat_id, date):
     STATES[str(chat_id)]["date"] = date
     STATES[str(chat_id)]["state"] = "manual_time"
     master = firestore_get("masters", str(chat_id))
-    svc_name = STATES[str(chat_id)].get("service", "")
-    slots = get_smart_slots(master, date, svc_name)
-    buttons = [[{"text": f"{'🟢' if not b else '❌'} {t}", "callback_data": f"man_time_{t}" if not b else "ignore"}] for (t, b) in slots]
-    send_message(chat_id, f"⏰ Время:", reply_markup={"inline_keyboard": buttons})
+    schedule = master.get("schedule", {})
+    day_key = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"][datetime.strptime(date, '%Y-%m-%d').weekday()]
+    day_sched = schedule.get(day_key)
+    if day_sched is None:
+        STATES.pop(str(chat_id), None)
+        return send_message(chat_id, "📭 В этот день выходной.", reply_markup=master_menu())
+    
+    start_h = int(day_sched["start"].split(":")[0])
+    end_h = int(day_sched["end"].split(":")[0])
+    busy = {a.get("time") for a in firestore_query("appointments", "master_id", "EQUAL", str(chat_id)) if a.get("date") == date and a.get("status") != "cancelled"}
+    buttons = []
+    for h in range(start_h, end_h + 1):
+        slot = f"{h}:00"
+        if slot in busy:
+            buttons.append([{"text": f"❌ {slot}", "callback_data": "ignore"}])
+        else:
+            buttons.append([{"text": f"🟢 {slot}", "callback_data": f"man_time_{slot}"}])
+    
+    if not buttons:
+        STATES.pop(str(chat_id), None)
+        return send_message(chat_id, "📭 Нет свободных слотов.", reply_markup=master_menu())
+    
+    send_message(chat_id, "⏰ *Выберите время:*", reply_markup={"inline_keyboard": buttons})
 
 def handle_manual_time(chat_id, time):
     state = STATES.pop(str(chat_id), {})
