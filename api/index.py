@@ -13,7 +13,6 @@ TELEGRAM_URL = f"https://api.telegram.org/bot{TOKEN}"
 FIRESTORE_URL = "https://firestore.googleapis.com/v1/projects/grafikpro-d3500/databases/(default)/documents"
 API_KEY = "AIzaSyAmP4IW-mcqhXT1L6s4vx5_Z7IZbi1YqI8"
 
-# === БАЗА ДАННЫХ ===
 def firestore_get(collection, doc_id):
     r = requests.get(f"{FIRESTORE_URL}/{collection}/{doc_id}?key={API_KEY}")
     if r.status_code != 200: return None
@@ -114,7 +113,6 @@ def firestore_add(collection, data):
 def firestore_delete(collection, doc_id):
     return requests.delete(f"{FIRESTORE_URL}/{collection}/{doc_id}?key={API_KEY}").status_code == 200
 
-# === TELEGRAM ===
 def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode or "Markdown"}
     if reply_markup: payload["reply_markup"] = json.dumps(reply_markup)
@@ -129,40 +127,37 @@ def reminder_worker():
     while True:
         try:
             now = datetime.now()
-            reminder_time = (now + timedelta(hours=1)).strftime('%H:%M')
-            day_before = (now + timedelta(hours=24)).strftime('%H:%M')
+            reminder_1h = (now + timedelta(hours=1)).strftime('%H:%M')
+            reminder_24h = (now + timedelta(hours=24)).strftime('%H:%M')
             tomorrow = (now + timedelta(days=1)).strftime('%Y-%m-%d')
             for date in [now.strftime('%Y-%m-%d'), tomorrow]:
                 all_appts = firestore_query("appointments", "date", "EQUAL", date)
                 for a in all_appts:
-                    if a.get("time") == reminder_time and a.get("status") == "confirmed" and not a.get("reminded"):
+                    if a.get("status") != "confirmed": continue
+                    if a.get("time") == reminder_1h and not a.get("reminded"):
                         send_message(int(a["master_id"]), f"⏰ *Напоминание!*\nЧерез час: {a.get('client_name')} — {a.get('service')}")
-                        if "client_id" in a:
-                            send_message(int(a["client_id"]), f"⏰ *Напоминание!*\nЧерез час: {a.get('service')} в {a.get('time')}")
+                        if "client_id" in a: send_message(int(a["client_id"]), f"⏰ *Напоминание!*\nЧерез час: {a.get('service')} в {a.get('time')}")
                         firestore_set("appointments", a["_id"], {"reminded": True})
-                    if a.get("time") == day_before and a.get("status") == "confirmed" and not a.get("reminded_24h"):
-                        if "client_id" in a:
-                            send_message(int(a["client_id"]), f"📅 *Напоминание!*\nЗавтра в {a.get('time')}: {a.get('service')}")
+                    if a.get("time") == reminder_24h and not a.get("reminded_24h"):
+                        if "client_id" in a: send_message(int(a["client_id"]), f"📅 *Напоминание!*\nЗавтра в {a.get('time')}: {a.get('service')}")
                         firestore_set("appointments", a["_id"], {"reminded_24h": True})
-        except Exception as e:
-            print(f"Reminder error: {e}")
+        except Exception as e: print(f"Reminder: {e}")
         time.sleep(60)
 
 threading.Thread(target=reminder_worker, daemon=True).start()
 
-# === КЛАВИАТУРЫ ===
+STATES = {}
+
 def master_menu():
     return {"keyboard": [["📊 Дашборд", "📅 Расписание"], ["➕ Новая запись", "👥 Клиенты"], ["🔗 Моя ссылка", "📢 Свободные окна"], ["⚙️ Настройки"]], "resize_keyboard": True}
 
 def client_menu():
-    return {"keyboard": [["📋 Мои записи"]], "resize_keyboard": True}
+    return {"keyboard": [["📋 Мои записи"], ["🔍 Найти мастера"]], "resize_keyboard": True}
 
 def settings_menu():
-    return {"keyboard": [["💈 Услуги", "⏰ Часы"], ["🚫 Перерывы", "📍 Адрес"], ["🔙 В меню"]], "resize_keyboard": True}
+    return {"keyboard": [["💈 Услуги", "⏰ Часы"], ["🚫 Перерывы", "📍 Адрес"], ["🚷 Чёрный список", "🔙 В меню"]], "resize_keyboard": True}
 
-STATES = {}
-
-# === СТАРТ ===
+# === СТАРТ + ОНБОРДИНГ ===
 def handle_start(chat_id, user_name):
     if firestore_get("masters", str(chat_id)):
         send_message(chat_id, f"👋 {user_name}!", reply_markup=master_menu())
@@ -172,12 +167,26 @@ def handle_start(chat_id, user_name):
         send_message(chat_id, "👋 *График.Про*\n\nКто вы?", reply_markup={"keyboard": [["👤 Я мастер"], ["👥 Я клиент"]], "resize_keyboard": True})
 
 def handle_master_registration(chat_id, user_name, username):
-    firestore_set("masters", str(chat_id), {"name": user_name, "username": username, "services": [], "schedule": {"start": "09:00", "end": "18:00"}, "address": "", "completed_onboarding": False})
+    firestore_set("masters", str(chat_id), {"name": user_name, "username": username, "phone": "", "services": [], "schedule": {"start": "09:00", "end": "18:00"}, "address": "", "completed_onboarding": False, "blacklist": []})
     send_message(chat_id, f"✅ {user_name}, добро пожаловать!")
     start_onboarding(chat_id)
 
 def start_onboarding(chat_id):
-    send_message(chat_id, "👋 *Давай настроим твой кабинет!*\n\n*Шаг 1:* Добавь услуги", reply_markup={"inline_keyboard": [[{"text": "💈 Добавить услуги", "callback_data": "addservice"}]]})
+    text = "👋 *Добро пожаловать в График.Про!*\n\nДавай настроим твой кабинет за 3 минуты.\n\n*Шаг 1 из 4:* Добавь услуги\nНажми кнопку ниже и введи название, цену и длительность."
+    send_message(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "💈 Добавить услуги", "callback_data": "addservice"}], [{"text": "⏩ Пропустить", "callback_data": "onboarding_skip"}]]})
+
+def onboarding_step(chat_id, step):
+    if step == 2:
+        send_message(chat_id, "✅ *Отлично!*\n\n*Шаг 2 из 4:* Укажи часы работы\nНажми кнопку ниже.", reply_markup={"inline_keyboard": [[{"text": "⏰ Настроить часы", "callback_data": "onboarding_hours"}], [{"text": "⏩ Пропустить", "callback_data": "onboarding_skip"}]]})
+    elif step == 3:
+        send_message(chat_id, "✅ *Часы настроены!*\n\n*Шаг 3 из 4:* Добавь адрес\nКлиенты будут знать, куда идти.", reply_markup={"inline_keyboard": [[{"text": "📍 Добавить адрес", "callback_data": "onboarding_address"}], [{"text": "⏩ Пропустить", "callback_data": "onboarding_skip"}]]})
+    elif step == 4:
+        send_message(chat_id, "✅ *Адрес добавлен!*\n\n*Шаг 4 из 4:* Укажи свой номер телефона\nКлиенты смогут найти тебя по номеру.", reply_markup={"inline_keyboard": [[{"text": "📞 Указать номер", "callback_data": "onboarding_phone"}], [{"text": "⏩ Пропустить", "callback_data": "onboarding_skip"}]]})
+
+def finish_onboarding(chat_id):
+    firestore_set("masters", str(chat_id), {"completed_onboarding": True})
+    send_message(chat_id, "🎉 *Твой кабинет готов!*\n\nВот твоя ссылка для клиентов. Отправь её в WhatsApp или соцсети:", reply_markup=master_menu())
+    handle_master_link(chat_id)
 
 # === УМНАЯ СЕТКА ===
 def get_smart_slots(master, date, service_name):
@@ -190,7 +199,7 @@ def get_smart_slots(master, date, service_name):
     duration = svc.get("duration", 60) if svc else 60
     busy_intervals = []
     for a in firestore_query("appointments", "master_id", "EQUAL", str(master.get("chat_id", ""))):
-        if a.get("date") == date and a.get("status") != "cancelled":
+        if a.get("date") == date and a.get("status") not in ["cancelled"]:
             a_svc = next((s for s in services if isinstance(s, dict) and s.get("name") == a.get("service")), None)
             a_dur = a_svc.get("duration", 60) if a_svc else 60
             busy_start = int(a["time"].split(":")[0]) * 60 + int(a["time"].split(":")[1]) if ":" in a["time"] else int(a["time"].split(":")[0]) * 60
@@ -216,37 +225,122 @@ def handle_dashboard(chat_id, period="today"):
     appointments = firestore_query("appointments", "master_id", "EQUAL", str(chat_id))
     master = firestore_get("masters", str(chat_id)) or {}
     services = master.get("services", [])
+    
     if period == "week":
         week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-        filtered = [a for a in appointments if a.get("date", "") >= week_ago]
-        prev_filtered = [a for a in appointments if (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d') <= a.get("date", "") < week_ago]
+        filtered = [a for a in appointments if a.get("date", "") >= week_ago and a.get("status") == "completed"]
+        prev_filtered = [a for a in appointments if (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d') <= a.get("date", "") < week_ago and a.get("status") == "completed"]
         label = "📊 *Доход за неделю*"
     elif period == "month":
         month_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-        filtered = [a for a in appointments if a.get("date", "") >= month_ago]
-        prev_filtered = [a for a in appointments if (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d') <= a.get("date", "") < month_ago]
+        filtered = [a for a in appointments if a.get("date", "") >= month_ago and a.get("status") == "completed"]
+        prev_filtered = [a for a in appointments if (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d') <= a.get("date", "") < month_ago and a.get("status") == "completed"]
         label = "📊 *Доход за месяц*"
     else:
         filtered = [a for a in appointments if a.get("date") == today and a.get("status") != "cancelled"]
         prev_filtered = []
         label = "📊 *Дашборд на сегодня*"
+    
     def calc_total(appts):
         total = 0
         for a in appts:
-            if a.get("status") == "completed":
-                svc = a.get("service", "")
-                for s in services:
-                    if isinstance(s, dict) and s.get("name") == svc: total += s.get("price", 0)
+            svc = a.get("service", "")
+            for s in services:
+                if isinstance(s, dict) and s.get("name") == svc: total += s.get("price", 0)
         return total
+    
     total = calc_total(filtered)
     prev_total = calc_total(prev_filtered)
     text = f"{label}\n\n📅 Записей: {len(filtered)}\n💰 Доход: {total}₽"
     if prev_total > 0:
         change = int((total - prev_total) / prev_total * 100)
         text += f"\n\n{'📈' if change > 0 else '📉'} {change:+d}% к прошлому периоду"
+    
+    # Статистика по услугам
+    svc_stats = {}
+    for a in filtered:
+        svc = a.get("service", "")
+        if svc not in svc_stats: svc_stats[svc] = {"count": 0, "total": 0}
+        for s in services:
+            if isinstance(s, dict) and s.get("name") == svc:
+                svc_stats[svc]["total"] += s.get("price", 0)
+        svc_stats[svc]["count"] += 1
+    
+    if svc_stats:
+        text += "\n\n💈 *По услугам:*\n"
+        for svc, data in sorted(svc_stats.items(), key=lambda x: x[1]["total"], reverse=True):
+            text += f"• {svc}: {data['count']} зап. — {data['total']}₽\n"
+    
     send_message(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "Сегодня", "callback_data": "dash_today"}, {"text": "Неделя", "callback_data": "dash_week"}, {"text": "Месяц", "callback_data": "dash_month"}]]})
 
-# === ПЕРЕНОС ЗАПИСИ ===
+# === ПОИСК МАСТЕРА ===
+def handle_find_master_start(chat_id):
+    STATES[str(chat_id)] = {"state": "finding_master"}
+    send_message(chat_id, "🔍 *Поиск мастера*\n\nВведите номер телефона мастера:\nНапример: +79001234567", reply_markup={"keyboard": [["🔙 Отмена"]], "resize_keyboard": True})
+
+def handle_find_master(chat_id, phone):
+    phone_clean = re.sub(r'[^0-9+]', '', phone)
+    # Ищем мастера по номеру телефона
+    masters = firestore_query("masters", "phone", "EQUAL", phone_clean)
+    if not masters:
+        STATES.pop(str(chat_id), None)
+        return send_message(chat_id, "❌ Мастер с таким номером не найден.", reply_markup=client_menu())
+    
+    master = masters[0]
+    services = [s for s in master.get("services", []) if isinstance(s, dict) and s.get("name")]
+    addr = master.get("address", "Не указан")
+    
+    text = f"👤 *{master.get('name', 'Мастер')}*\n📍 {addr}\n\n"
+    if services:
+        text += "💈 *Услуги:*\n"
+        for s in services:
+            text += f"• {s['name']} — {s['price']}₽ ({s.get('duration',60)}мин)\n"
+    
+    links = firestore_query("links", "master_id", "EQUAL", master.get("_id", ""))
+    link_id = links[0]["_id"] if links else str(uuid.uuid4())[:8]
+    if not links: firestore_set("links", link_id, {"master_id": master.get("_id", "")})
+    
+    STATES.pop(str(chat_id), None)
+    buttons = [[{"text": "📝 Записаться", "callback_data": f"clsrv_{link_id}_{services[0]['name']}"}] if services else []]
+    send_message(chat_id, text, reply_markup={"inline_keyboard": buttons} if buttons else None)
+
+# === ЧЁРНЫЙ СПИСОК ===
+def handle_blacklist_settings(chat_id):
+    master = firestore_get("masters", str(chat_id))
+    if not master: return send_message(chat_id, "Сначала зарегистрируйтесь.")
+    blacklist = master.get("blacklist", [])
+    if blacklist:
+        text = "🚷 *Чёрный список:*\n" + "\n".join([f"• {b}" for b in blacklist])
+        buttons = [[{"text": f"🗑 Удалить {b}", "callback_data": f"unblock_{b}"}] for b in blacklist]
+    else:
+        text = "🚷 Чёрный список пуст."
+        buttons = []
+    buttons.append([{"text": "➕ Добавить", "callback_data": "add_to_blacklist"}])
+    buttons.append([{"text": "🔙 Назад", "callback_data": "settings_back"}])
+    send_message(chat_id, text, reply_markup={"inline_keyboard": buttons})
+
+def handle_add_to_blacklist_start(chat_id):
+    STATES[str(chat_id)] = {"state": "adding_to_blacklist"}
+    send_message(chat_id, "🚷 Введите номер телефона для блокировки:", reply_markup={"keyboard": [["🔙 Отмена"]], "resize_keyboard": True})
+
+def handle_add_to_blacklist(chat_id, phone):
+    phone_clean = re.sub(r'[^0-9+]', '', phone)
+    master = firestore_get("masters", str(chat_id))
+    blacklist = master.get("blacklist", [])
+    if phone_clean not in blacklist:
+        blacklist.append(phone_clean)
+        firestore_set("masters", str(chat_id), {"blacklist": blacklist})
+    STATES.pop(str(chat_id), None)
+    send_message(chat_id, f"✅ {phone_clean} добавлен в чёрный список.", reply_markup=settings_menu())
+
+def handle_unblock(chat_id, phone):
+    master = firestore_get("masters", str(chat_id))
+    blacklist = master.get("blacklist", [])
+    blacklist = [b for b in blacklist if b != phone]
+    firestore_set("masters", str(chat_id), {"blacklist": blacklist})
+    handle_blacklist_settings(chat_id)
+
+# === ПЕРЕНОС ===
 def handle_reschedule_start(chat_id, appt_id):
     appt = firestore_get("appointments", appt_id)
     if not appt: return send_message(chat_id, "Запись не найдена.")
@@ -281,7 +375,7 @@ def handle_client_start(chat_id, link_id):
     addr = master.get("address", "")
     text = f"📝 *Запись к {master.get('name')}*"
     if addr: text += f"\n📍 {addr}"
-    text += "\nВыберите услугу:"
+    text += "\n\nВыберите услугу:"
     buttons = [[{"text": f"{s['name']} — {s['price']}₽ ({s.get('duration',60)}мин)", "callback_data": f"clsrv_{link_id}_{s['name']}"}] for s in services]
     STATES[str(chat_id)] = {"link_id": link_id, "master_name": master.get("name"), "master_addr": addr}
     send_message(chat_id, text, reply_markup={"inline_keyboard": buttons})
@@ -297,6 +391,15 @@ def handle_client_date_select(chat_id, link_id, date):
     link = firestore_get("links", link_id)
     if not link: return send_message(chat_id, "❌ Ссылка не найдена.")
     master = firestore_get("masters", link["master_id"])
+    # Проверка чёрного списка
+    blacklist = master.get("blacklist", [])
+    # Получаем номер клиента из предыдущих записей
+    client_appts = firestore_query("appointments", "client_id", "EQUAL", str(chat_id))
+    client_phone = client_appts[0].get("client_phone", "") if client_appts else ""
+    if client_phone in blacklist:
+        STATES.pop(str(chat_id), None)
+        return send_message(chat_id, "❌ Вы не можете записаться к этому мастеру.")
+    
     service = STATES.get(str(chat_id), {}).get("service", "")
     slots = get_smart_slots(master, date, service)
     STATES[str(chat_id)]["date"] = date
@@ -321,6 +424,10 @@ def handle_client_phone(chat_id, phone):
     link = firestore_get("links", state.get("link_id", ""))
     if not link: return send_message(chat_id, "❌ Сессия истекла.")
     master = firestore_get("masters", link["master_id"])
+    # Ещё раз проверяем чёрный список
+    if phone_clean in master.get("blacklist", []):
+        return send_message(chat_id, "❌ Вы не можете записаться к этому мастеру.")
+    
     addr = master.get("address", "")
     firestore_add("appointments", {"master_id": link["master_id"], "client_id": str(chat_id), "client_name": state["client_name"], "client_phone": phone_clean, "service": state["service"], "date": state["date"], "time": state["time"], "status": "confirmed"})
     ics = f"BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:{state['date'].replace('-','')}T{state['time'].replace(':','')}00\nSUMMARY:{master.get('name')} - {state.get('service')}\nEND:VEVENT\nEND:VCALENDAR"
@@ -336,21 +443,21 @@ def handle_free_slots(chat_id):
     master = firestore_get("masters", str(chat_id))
     sched = master.get("schedule", {"start": "09:00", "end": "18:00"})
     start_h, end_h = int(sched["start"].split(":")[0]), int(sched["end"].split(":")[0])
-    busy = {a.get("time") for a in firestore_query("appointments", "master_id", "EQUAL", str(chat_id)) if a.get("date") == tomorrow and a.get("status") != "cancelled"}
+    busy = {a.get("time") for a in firestore_query("appointments", "master_id", "EQUAL", str(chat_id)) if a.get("date") == tomorrow and a.get("status") not in ["cancelled"]}
     free = [f"{h}:00" for h in range(start_h, end_h + 1) if f"{h}:00" not in busy]
     if not free: return send_message(chat_id, "📭 На завтра всё занято!")
     links = firestore_query("links", "master_id", "EQUAL", str(chat_id))
     link_id = links[0]["_id"] if links else str(uuid.uuid4())[:8]
-    send_message(chat_id, f"🟢 *Свободные окна:* {', '.join(free)}\n\n```Свободные окна: {', '.join(free)}\nЗапись: https://t.me/grafikpro_bot?start=master_{link_id}```")
+    send_message(chat_id, f"🟢 *Свободные окна на завтра:*\n{', '.join(free)}\n\n📲 Отправь клиентам:\nhttps://t.me/grafikpro_bot?start=master_{link_id}")
 
 def handle_master_link(chat_id):
     if not firestore_get("masters", str(chat_id)): return send_message(chat_id, "Сначала зарегистрируйтесь.")
     links = firestore_query("links", "master_id", "EQUAL", str(chat_id))
     link_id = links[0]["_id"] if links else str(uuid.uuid4())[:8]
     if not links: firestore_set("links", link_id, {"master_id": str(chat_id)})
-    send_message(chat_id, f"🔗 *Ссылка:*\n\n[Открыть в Telegram](tg://resolve?domain=grafikpro_bot&start=master_{link_id})")
+    send_message(chat_id, f"🔗 *Твоя ссылка для клиентов:*\n\n📨 [Открыть в Telegram](tg://resolve?domain=grafikpro_bot&start=master_{link_id})\n\nИли скопируй и отправь:\n`https://t.me/grafikpro_bot?start=master_{link_id}`")
 
-# === РАСПИСАНИЕ (с кнопками действий) ===
+# === РАСПИСАНИЕ ===
 def handle_schedule_view(chat_id):
     appointments = firestore_query("appointments", "master_id", "EQUAL", str(chat_id))
     if not appointments: return send_message(chat_id, "📭 Записей пока нет.")
@@ -372,17 +479,30 @@ def handle_schedule_view(chat_id):
 
 def handle_complete_appointment(chat_id, appt_id):
     firestore_set("appointments", appt_id, {"status": "completed"})
-    send_message(chat_id, "✅ Отмечено как выполненное.", reply_markup=master_menu())
+    send_message(chat_id, "✅ Выполнено!", reply_markup=master_menu())
 
 def handle_noshow_appointment(chat_id, appt_id):
     firestore_set("appointments", appt_id, {"status": "no_show"})
-    send_message(chat_id, "❌ Отмечено как неявка.", reply_markup=master_menu())
+    appt = firestore_get("appointments", appt_id)
+    # Проверяем, сколько неявок у клиента
+    if appt:
+        no_shows = firestore_query("appointments", "client_phone", "EQUAL", appt.get("client_phone", ""))
+        no_show_count = sum(1 for n in no_shows if n.get("status") == "no_show")
+        if no_show_count >= 2:
+            master = firestore_get("masters", str(chat_id))
+            blacklist = master.get("blacklist", [])
+            if appt.get("client_phone") not in blacklist:
+                blacklist.append(appt.get("client_phone"))
+                firestore_set("masters", str(chat_id), {"blacklist": blacklist})
+                send_message(chat_id, f"❌ Неявка! Клиент {appt.get('client_name')} добавлен в чёрный список (2 неявки).", reply_markup=master_menu())
+                return
+    send_message(chat_id, "❌ Неявка.", reply_markup=master_menu())
 
 def handle_delete_appointment(chat_id, appt_id):
     appt = firestore_get("appointments", appt_id)
     if appt and appt.get("client_id"): send_message(int(appt["client_id"]), f"❌ *Запись отменена мастером*\n{appt.get('service')}\n{appt.get('date')} в {appt.get('time')}")
     firestore_set("appointments", appt_id, {"status": "cancelled"})
-    send_message(chat_id, "🗑 Запись удалена.", reply_markup=master_menu())
+    send_message(chat_id, "🗑 Удалена.", reply_markup=master_menu())
 
 # === КЛИЕНТЫ ===
 def handle_clients_list(chat_id):
@@ -410,8 +530,34 @@ def handle_client_card(chat_id, phone):
     for h in sorted(history, key=lambda x: x.get("date", ""), reverse=True)[:10]:
         status_icon = {"confirmed": "🟡", "completed": "✅", "no_show": "❌", "cancelled": "🗑"}.get(h.get("status"), "")
         text += f"{status_icon} {h.get('date')} — {h.get('service')}\n"
-    buttons = [[{"text": "📝 Заметка", "callback_data": f"add_note_{phone}"}], [{"text": "🔄 Повторить", "callback_data": f"repeat_{phone}"}]]
+    links = firestore_query("links", "master_id", "EQUAL", str(chat_id))
+    link_id = links[0]["_id"] if links else str(uuid.uuid4())[:8]
+    buttons = [
+        [{"text": "📝 Заметка", "callback_data": f"add_note_{phone}"}],
+        [{"text": "🔄 Повторить", "callback_data": f"repeat_{phone}"}],
+        [{"text": "💬 Быстрый ответ", "callback_data": f"quick_msg_{phone}"}],
+        [{"text": "📞 Позвонить", "url": f"tel:{phone}"}],
+    ]
     send_message(chat_id, text, reply_markup={"inline_keyboard": buttons})
+
+def handle_quick_message(chat_id, client_phone):
+    links = firestore_query("links", "master_id", "EQUAL", str(chat_id))
+    link_id = links[0]["_id"] if links else str(uuid.uuid4())[:8]
+    text = f"💬 *Быстрые ответы для {client_phone}:*\n\nВыберите шаблон:"
+    buttons = [
+        [{"text": "📅 Записаться снова", "callback_data": f"repeat_{client_phone}"}],
+        [{"text": "⏰ Подтвердить запись", "callback_data": f"confirm_msg_{client_phone}"}],
+        [{"text": "📍 Адрес", "callback_data": f"address_msg_{client_phone}"}],
+    ]
+    send_message(chat_id, text, reply_markup={"inline_keyboard": buttons})
+
+def handle_confirm_message(chat_id, client_phone):
+    send_message(chat_id, f"✅ *Шаблон отправлен!*\n\nКлиент {client_phone} получит:\n«Добрый день! Подтверждаю вашу запись. Жду вас!»")
+
+def handle_address_message(chat_id, client_phone):
+    master = firestore_get("masters", str(chat_id))
+    addr = master.get("address", "Адрес не указан")
+    send_message(chat_id, f"📍 *Адрес для клиента {client_phone}:*\n\n{addr}")
 
 def handle_repeat_appointment(chat_id, client_phone):
     links = firestore_query("links", "master_id", "EQUAL", str(chat_id))
@@ -424,7 +570,7 @@ def handle_repeat_appointment(chat_id, client_phone):
 def handle_client_appointments(chat_id):
     all_appts = firestore_query("appointments", "client_id", "EQUAL", str(chat_id))
     active = [a for a in all_appts if a.get("status") not in ["cancelled"]]
-    if not active: return send_message(chat_id, "📋 У вас пока нет записей.")
+    if not active: return send_message(chat_id, "📋 У вас пока нет записей.\n\nНажмите «🔍 Найти мастера» для поиска.")
     active.sort(key=lambda a: (a.get("date", ""), a.get("time", "")))
     text = "📋 *Мои записи:*\n"
     buttons = []
@@ -443,8 +589,7 @@ def handle_client_reschedule_start(chat_id, appt_id):
     appt = firestore_get("appointments", appt_id)
     if not appt or appt.get("client_id") != str(chat_id): return send_message(chat_id, "❌ Ошибка.")
     STATES[str(chat_id)] = {"state": "client_reschedule_date", "appt_id": appt_id}
-    buttons = [[{"text": (datetime.now() + timedelta(days=i+1)).strftime('%d.%m (%a)'), "callback_data": f"cl_res_date_{appt_id}_{(datetime.now() + timedelta(days=i+1)).strftime('%Y-%m-%d')}"}] for i in range(7)]
-    send_message(chat_id, "🔄 *Перенос записи*\nНовая дата:", reply_markup={"inline_keyboard": buttons})
+    send_message(chat_id, "🔄 *Перенос записи*\nНовая дата:", reply_markup={"inline_keyboard": [[{"text": (datetime.now() + timedelta(days=i+1)).strftime('%d.%m (%a)'), "callback_data": f"cl_res_date_{appt_id}_{(datetime.now() + timedelta(days=i+1)).strftime('%Y-%m-%d')}"}] for i in range(7)]})
 
 def handle_client_reschedule_date(chat_id, appt_id, date):
     STATES[str(chat_id)] = {"state": "client_reschedule_time", "appt_id": appt_id, "new_date": date}
@@ -473,7 +618,7 @@ def handle_services_settings(chat_id):
     master = firestore_get("masters", str(chat_id))
     if not master: return send_message(chat_id, "Сначала зарегистрируйтесь.")
     services = [s for s in master.get("services", []) if isinstance(s, dict) and s.get("name")]
-    buttons = [[{"text": f"❌ {s['name']} ({s.get('price',0)}₽)", "callback_data": f"delservice_{s['name']}"}] for s in services]
+    buttons = [[{"text": f"❌ {s['name']} ({s.get('price',0)}₽, {s.get('duration',60)}мин)", "callback_data": f"delservice_{s['name']}"}] for s in services]
     buttons.append([{"text": "➕ Добавить", "callback_data": "addservice"}])
     buttons.append([{"text": "🔙 Назад", "callback_data": "settings_back"}])
     send_message(chat_id, "💈 *Услуги:*" if services else "💈 Нет услуг.", reply_markup={"inline_keyboard": buttons})
@@ -506,7 +651,7 @@ def handle_add_service_duration(chat_id, dur_text):
     STATES.pop(str(chat_id), None)
     if not master.get("completed_onboarding"):
         firestore_set("masters", str(chat_id), {"completed_onboarding": True})
-        send_message(chat_id, "✅ *Отлично!*\nТеперь: ⚙️ Настройки → ⏰ Часы", reply_markup=master_menu())
+        onboarding_step(chat_id, 2)
     else:
         send_message(chat_id, f"✅ *{state['name']}* — {state['price']}₽, {duration}мин", reply_markup=settings_menu())
 
@@ -566,6 +711,16 @@ def handle_address_set(chat_id, text):
     STATES.pop(str(chat_id), None)
     send_message(chat_id, f"✅ Адрес сохранён: {text}", reply_markup=settings_menu())
 
+def handle_phone_settings(chat_id):
+    STATES[str(chat_id)] = {"state": "setting_phone"}
+    send_message(chat_id, "📞 *Ваш номер телефона*\n\nОтправьте номер (клиенты будут находить вас по нему):", reply_markup={"keyboard": [["🔙 Отмена"]], "resize_keyboard": True})
+
+def handle_phone_set(chat_id, text):
+    phone_clean = re.sub(r'[^0-9+]', '', text)
+    firestore_set("masters", str(chat_id), {"phone": phone_clean})
+    STATES.pop(str(chat_id), None)
+    send_message(chat_id, f"✅ Номер сохранён: {phone_clean}", reply_markup=settings_menu())
+
 # === РУЧНАЯ ЗАПИСЬ ===
 def handle_manual_appointment_start(chat_id):
     STATES[str(chat_id)] = {"state": "manual_name"}
@@ -573,7 +728,7 @@ def handle_manual_appointment_start(chat_id):
 
 def handle_manual_name(chat_id, name):
     STATES[str(chat_id)] = {"state": "manual_phone", "client_name": name}
-    send_message(chat_id, f"📞 Телефон клиента:")
+    send_message(chat_id, "📞 Телефон клиента:")
 
 def handle_manual_phone(chat_id, phone):
     phone_clean = re.sub(r'[^0-9+]', '', phone)
@@ -632,6 +787,7 @@ def handle_manual_time(chat_id, time):
 # === ОБРАБОТКА ===
 def handle_text(chat_id, user_name, username, text):
     state = STATES.get(str(chat_id), {}).get("state")
+    
     if state == "adding_service_name":
         if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
         return handle_add_service_name(chat_id, text)
@@ -665,14 +821,24 @@ def handle_text(chat_id, user_name, username, text):
     if state == "setting_address":
         if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
         return handle_address_set(chat_id, text)
+    if state == "setting_phone":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
+        return handle_phone_set(chat_id, text)
+    if state == "adding_to_blacklist":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
+        return handle_add_to_blacklist(chat_id, text)
+    if state == "finding_master":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=client_menu())
+        return handle_find_master(chat_id, text)
     
     is_master = firestore_get("masters", str(chat_id))
     if text == "👤 Я мастер": handle_master_registration(chat_id, user_name, username)
     elif text == "👥 Я клиент":
         if not firestore_get("clients", str(chat_id)): firestore_set("clients", str(chat_id), {"created_at": datetime.now().isoformat()})
-        send_message(chat_id, "👥 *Клиентский кабинет*", reply_markup=client_menu())
+        send_message(chat_id, "👥 *Клиентский кабинет*\n\nВы можете:\n🔍 Найти мастера по номеру\n📋 Посмотреть свои записи", reply_markup=client_menu())
     elif text == "📊 Дашборд": handle_dashboard(chat_id) if is_master else send_message(chat_id, "Только для мастера.")
     elif text == "📋 Мои записи": handle_client_appointments(chat_id)
+    elif text == "🔍 Найти мастера": handle_find_master_start(chat_id)
     elif text == "➕ Новая запись": handle_manual_appointment_start(chat_id) if is_master else send_message(chat_id, "Только для мастера.")
     elif text == "📢 Свободные окна": handle_free_slots(chat_id) if is_master else send_message(chat_id, "Только для мастера.")
     elif text == "⚙️ Настройки": send_message(chat_id, "⚙️ *Настройки*", reply_markup=settings_menu())
@@ -680,6 +846,7 @@ def handle_text(chat_id, user_name, username, text):
     elif text == "⏰ Часы": handle_schedule_settings(chat_id)
     elif text == "🚫 Перерывы": handle_breaks_settings(chat_id)
     elif text == "📍 Адрес": handle_address_settings(chat_id)
+    elif text == "🚷 Чёрный список": handle_blacklist_settings(chat_id)
     elif text == "🔙 В меню": STATES.pop(str(chat_id), None); send_message(chat_id, "Главное меню", reply_markup=master_menu() if is_master else client_menu())
     elif text == "🔗 Моя ссылка": handle_master_link(chat_id)
     elif text == "📅 Расписание": handle_schedule_view(chat_id)
@@ -691,6 +858,8 @@ def handle_callback(chat_id, data):
     elif data.startswith("delservice_"): handle_delete_service(chat_id, data.replace("delservice_", "", 1))
     elif data == "settings_back": send_message(chat_id, "⚙️ Настройки", reply_markup=settings_menu())
     elif data == "add_break": handle_add_break_prompt(chat_id)
+    elif data == "add_to_blacklist": handle_add_to_blacklist_start(chat_id)
+    elif data.startswith("unblock_"): handle_unblock(chat_id, data.replace("unblock_", "", 1))
     elif data.startswith("dash_"): handle_dashboard(chat_id, period=data.replace("dash_", ""))
     elif data.startswith("cancel_"): handle_cancel_appointment(chat_id, data.replace("cancel_", "", 1))
     elif data.startswith("complete_"): handle_complete_appointment(chat_id, data.replace("complete_", "", 1))
@@ -716,9 +885,16 @@ def handle_callback(chat_id, data):
     elif data.startswith("add_note_"): handle_add_client_note(chat_id, data.replace("add_note_", "", 1))
     elif data.startswith("client_card_"): handle_client_card(chat_id, data.replace("client_card_", "", 1))
     elif data.startswith("repeat_"): handle_repeat_appointment(chat_id, data.replace("repeat_", "", 1))
+    elif data.startswith("quick_msg_"): handle_quick_message(chat_id, data.replace("quick_msg_", "", 1))
+    elif data.startswith("confirm_msg_"): handle_confirm_message(chat_id, data.replace("confirm_msg_", "", 1))
+    elif data.startswith("address_msg_"): handle_address_message(chat_id, data.replace("address_msg_", "", 1))
     elif data.startswith("clsrv_"): handle_client_service_select(chat_id, data.split("_")[1], data.split("_")[2])
     elif data.startswith("cldate_"): handle_client_date_select(chat_id, data.split("_")[1], data.split("_")[2])
     elif data.startswith("cltime_"): handle_client_time_select(chat_id, data.split("_")[1], data.split("_")[2], data.split("_")[3])
+    elif data == "onboarding_skip": finish_onboarding(chat_id)
+    elif data == "onboarding_hours": handle_schedule_settings(chat_id)
+    elif data == "onboarding_address": handle_address_settings(chat_id)
+    elif data == "onboarding_phone": handle_phone_settings(chat_id)
     elif data == "ignore": pass
 
 def process_update(update):
