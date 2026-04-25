@@ -661,7 +661,8 @@ def handle_text(chat_id, user_name, username, text):
     if state == "adding_service_description":
         if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
         return handle_add_service_description(chat_id, text)
-    if state == "photo_caption": return handle_photo_caption(chat_id, text)
+    if state == "photo_caption":
+        return handle_photo_caption(chat_id, text)
     if state == "client_entering_name":
         if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.")
         return handle_client_name(chat_id, text)
@@ -671,8 +672,40 @@ def handle_text(chat_id, user_name, username, text):
     if state == "setting_day_schedule":
         if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
         return handle_day_schedule_set(chat_id, text)
-    if state == "client_comment": return handle_client_comment(chat_id, text)
-    if state == "writing_review": return handle_review_text(chat_id, text)
+    if state == "adding_break":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
+        return handle_add_break(chat_id, text)
+    if state == "manual_name":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=master_menu())
+        return handle_manual_name(chat_id, text)
+    if state == "manual_phone":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=master_menu())
+        return handle_manual_phone(chat_id, text)
+    if state == "adding_note":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=master_menu())
+        return handle_save_note(chat_id, text)
+    if state == "edit_client_name":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=master_menu())
+        return handle_edit_client_name(chat_id, text)
+    if state == "edit_client_phone":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=master_menu())
+        return handle_edit_client_phone(chat_id, text)
+    if state == "setting_address":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
+        return handle_address_set(chat_id, text)
+    if state == "adding_to_blacklist":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=settings_menu())
+        return handle_add_to_blacklist(chat_id, text)
+    if state == "finding_master":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=client_menu())
+        return handle_find_master(chat_id, text)
+    if state == "broadcast":
+        if text == "🔙 Отмена": STATES.pop(str(chat_id), None); return send_message(chat_id, "❌ Отменено.", reply_markup=master_menu())
+        return handle_broadcast_preview(chat_id, text)
+    if state == "client_comment":
+        return handle_client_comment(chat_id, text)
+    if state == "writing_review":
+        return handle_review_text(chat_id, text)
     
     # Автоответы
     if handle_auto_reply(chat_id, text):
