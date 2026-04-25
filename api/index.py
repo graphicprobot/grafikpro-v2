@@ -746,7 +746,6 @@ def handle_text(chat_id, user_name, username, text):
 def handle_callback(chat_id, data):
     if data == "addservice": handle_add_service_start(chat_id)
     elif data.startswith("delservice_"): handle_delete_service(chat_id, data.replace("delservice_", "", 1))
-    elif data.startswith("toggleservice_"): handle_toggle_service(chat_id, data.replace("toggleservice_", "", 1))
     elif data == "settings_back": send_message(chat_id, "⚙️ Настройки", reply_markup=settings_menu())
     elif data == "add_break": handle_add_break_prompt(chat_id)
     elif data == "add_to_blacklist": handle_add_to_blacklist_start(chat_id)
@@ -954,12 +953,7 @@ def handle_services_settings(chat_id):
     master = firestore_get("masters", str(chat_id))
     if not master: return send_message(chat_id, "Сначала зарегистрируйтесь.")
     services = [s for s in master.get("services", []) if isinstance(s, dict) and s.get("name")]
-    buttons = []
-    for s in services:
-        disabled = s.get("disabled", False)
-        prefix = "🔴" if disabled else "🟢"
-        buttons.append([{"text": f"❌ {s['name']} ({s.get('price',0)}₽)", "callback_data": f"delservice_{s['name']}"}])
-        buttons.append([{"text": f"{prefix} {'Включить' if disabled else 'Отключить'}: {s['name']}", "callback_data": f"toggleservice_{s['name']}"}])
+    buttons = [[{"text": f"❌ {s['name']} ({s.get('price',0)}₽, {s.get('duration',60)}мин)", "callback_data": f"delservice_{s['name']}"}] for s in services]
     buttons.append([{"text": "➕ Добавить", "callback_data": "addservice"}])
     buttons.append([{"text": "🔙 Назад", "callback_data": "settings_back"}])
     send_message(chat_id, "💈 *Услуги:*" if services else "💈 Нет услуг.", reply_markup={"inline_keyboard": buttons})
@@ -1009,14 +1003,6 @@ def handle_delete_service(chat_id, name):
         firestore_set("masters", str(chat_id), {"services": services})
     handle_services_settings(chat_id)
 
-def handle_toggle_service(chat_id, name):
-    master = firestore_get("masters", str(chat_id))
-    services = master.get("services", [])
-    for s in services:
-        if isinstance(s, dict) and s.get("name") == name:
-            s["disabled"] = not s.get("disabled", False)
-    firestore_set("masters", str(chat_id), {"services": services})
-    handle_services_settings(chat_id)
 
 def handle_breaks_settings(chat_id):
     master = firestore_get("masters", str(chat_id))
