@@ -270,6 +270,10 @@ def handle_help(chat_id, is_master):
 def handle_text(chat_id, user_name, username, text):
     state = STATES.get(str(chat_id), {}).get("state")
     is_master = firestore_get("masters", str(chat_id))
+    is_client = firestore_get("clients", str(chat_id))
+    
+    # Для отладки
+    print(f"DEBUG: chat_id={chat_id}, is_master={bool(is_master)}, is_client={bool(is_client)}")
     
     # Обработка состояний
     if state == "adding_service_name":
@@ -287,7 +291,7 @@ def handle_text(chat_id, user_name, username, text):
     if text == "👤 Я мастер":
         handle_master_registration(chat_id, user_name, username)
     elif text == "👥 Я клиент":
-        if not firestore_get("clients", str(chat_id)):
+        if not is_client:
             firestore_set("clients", str(chat_id), {"created_at": datetime.now().isoformat()})
         send_message(chat_id, "👥 Клиентский кабинет", reply_markup=client_menu())
     elif text == "📊 Дашборд" and is_master:
@@ -320,11 +324,16 @@ def handle_text(chat_id, user_name, username, text):
     elif text == "🔍 Найти мастера":
         send_message(chat_id, "🔍 Введите номер телефона мастера")
     elif text == "❓ Помощь":
-        handle_help(chat_id, is_master is not None)
+        # ИСПРАВЛЕНО: передаём True если is_master не None
+        handle_help(chat_id, bool(is_master))
     elif text == "🔙 В меню":
         STATES.pop(str(chat_id), None)
-        menu = master_menu() if is_master else client_menu()
-        send_message(chat_id, "Главное меню", reply_markup=menu)
+        if is_master:
+            send_message(chat_id, "Главное меню", reply_markup=master_menu())
+        elif is_client:
+            send_message(chat_id, "Главное меню", reply_markup=client_menu())
+        else:
+            send_message(chat_id, "Главное меню")
 
 # === ДАШБОРД ===
 def handle_dashboard(chat_id):
