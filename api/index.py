@@ -207,7 +207,7 @@ def handle_start(chat_id, user_name):
         send_message(chat_id, "👋 *График.Про*\n\nКто вы?", reply_markup={"keyboard": [["👤 Я мастер"], ["👥 Я клиент"]], "resize_keyboard": True})
 
 def handle_master_registration(chat_id, user_name, username):
-    firestore_set("masters", str(chat_id), {"name": user_name, "username": username, "phone": "", "buffer": 5, "services": [], "schedule": {"monday": {"start":"09:00","end":"18:00"},"tuesday": {"start":"09:00","end":"18:00"},"wednesday": {"start":"09:00","end":"18:00"},"thursday": {"start":"09:00","end":"18:00"},"friday": {"start":"09:00","end":"18:00"},"saturday": {"start":"10:00","end":"15:00"},"sunday": None}, "address": "", "completed_onboarding": False, "blacklist": [], "portfolio": [], "rating": 0, "ratings_count": 0})
+"schedule": {"monday": {"start":"09:00","end":"18:00"},"tuesday": {"start":"09:00","end":"18:00"},"wednesday": {"start":"09:00","end":"18:00"},"thursday": {"start":"09:00","end":"18:00"},"friday": {"start":"09:00","end":"18:00"},"saturday": {"start":"10:00","end":"15:00"},"sunday": {"start":"10:00","end":"15:00"}}, "address": "", "completed_onboarding": False, "blacklist": [], "portfolio": [], "rating": 0, "ratings_count": 0})
     send_message(chat_id, f"✅ {user_name}, добро пожаловать!")
     start_onboarding(chat_id)
 
