@@ -1,6 +1,6 @@
 """
 График.Про — бот для записи клиентов
-Версия: 3.0.5 (финальная)
+Версия: 3.0.6 (критический фикс)
 """
 
 import os
@@ -59,6 +59,15 @@ class DB:
     @staticmethod
     def set(collection, doc_id, data):
         try:
+            # Сначала читаем существующий документ
+            existing = DB.get(collection, doc_id)
+            if existing:
+                # Объединяем существующие поля с новыми
+                merged = dict(existing)
+                for key, val in data.items():
+                    merged[key] = val
+                data = merged
+            
             fields = DB._serialize(data)
             body = {"fields": fields}
             r = requests.patch(f"{FIRESTORE_URL}/{collection}/{doc_id}?key={API_KEY}", json=body, timeout=8)
@@ -328,6 +337,7 @@ def save_service(chat_id, name, price, duration):
     DB.set("masters", str(chat_id), {"services": svcs})
     STATES.pop(str(chat_id), None)
     TG.send(chat_id, f"✅ *{name}* — {price}₽, {duration}мин", reply_markup=KBD.settings())
+    return True
 
 def delete_service(chat_id, name):
     master = DB.get("masters", str(chat_id))
@@ -629,11 +639,7 @@ def handle_text(chat_id, user_name, username, text):
         try: d = int(text.strip())
         except: return TG.send(chat_id, "❌ Число")
         name, price = sd.get("svc_name",""), sd.get("svc_price",0)
-        master_data = DB.get("masters", str(chat_id))
-        svcs = [s for s in master_data.get("services", []) if isinstance(s, dict) and s.get("name")]
-        svcs.append({"name": name, "price": price, "duration": d, "disabled": False})
-        DB.set("masters", str(chat_id), {"services": svcs})
-        STATES.pop(str(chat_id), None)
+        save_service(chat_id, name, price, d)
         return TG.send(chat_id, f"✅ *{name}* — {price}₽, {d}мин\n\nДобавить ещё?", reply_markup={"inline_keyboard": [[{"text": "➕ Да", "callback_data": "onboarding_add_more"}], [{"text": "➡️ Дальше", "callback_data": "onboarding_next"}]]})
     if state == "manual_name": return handle_manual_name(chat_id, text)
     if state == "manual_phone": return handle_manual_phone(chat_id, text)
